@@ -313,3 +313,46 @@ class DataPreprocessor:
         }
         
         return stats
+    
+def main():
+    """Example usage of the data preprocessing module"""
+    # Initialize preprocessor
+    preprocessor = DataPreprocessor(image_size=(256, 256))
+    
+    # Load dataset (adjust path as needed)
+    data_path = "path/to/lgg-mri-segmentation"
+    
+    try:
+        image_paths, mask_paths, labels = preprocessor.load_kaggle_lgg_dataset(data_path)
+        print(f"Loaded {len(image_paths)} images")
+        
+        # Get dataset statistics
+        stats = preprocessor.get_dataset_statistics(labels)
+        print(f"Dataset Statistics: {stats}")
+        
+        # Create data splits
+        data_splits = preprocessor.create_data_splits(image_paths, mask_paths, labels)
+        
+        # Create dataloaders for segmentation
+        seg_dataloaders = preprocessor.create_dataloaders(
+            data_splits, batch_size=8, mode='segmentation'
+        )
+        
+        # Create dataloaders for classification
+        cls_dataloaders = preprocessor.create_dataloaders(
+            data_splits, batch_size=16, mode='classification'
+        )
+        
+        print("Data preprocessing completed successfully!")
+        
+        # Visualize samples
+        print("Visualizing segmentation samples...")
+        preprocessor.visualize_samples(seg_dataloaders['train'], num_samples=4, mode='segmentation')
+        
+    except Exception as e:
+        print(f"Error in data preprocessing: {str(e)}")
+        print("Please ensure the dataset path is correct and the dataset is downloaded.")
+
+
+if __name__ == "__main__":
+    main()
