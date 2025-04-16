@@ -294,6 +294,7 @@ class DataPreprocessor:
         
         plt.tight_layout()
         plt.show()
+        plt.savefig("segmentation_samples.png")
     
     def get_dataset_statistics(self, labels: List[int]) -> dict:
         """Get basic statistics about the dataset"""
