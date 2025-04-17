@@ -42,3 +42,148 @@ class ResidualBlock(nn.Module):
         out = self.relu(out)
         
         return out
+    
+class BrainTumorResNet(nn.Module):
+    """ResNet model for brain tumor classification"""
+    
+    def __init__(self, num_classes: int = 2, pretrained: bool = True):
+        super(BrainTumorResNet, self).__init__()
+        
+        # Use pretrained ResNet50 as backbone
+        if pretrained:
+            self.backbone = models.resnet50(pretrained=True)
+            # Freeze early layers for transfer learning
+            for param in list(self.backbone.parameters())[:-20]:
+                param.requires_grad = False
+        else:
+            self.backbone = models.resnet50(pretrained=False)
+        
+        # Modify the classifier
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(in_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(512, num_classes)
+        )
+        
+    def forward(self, x):
+        return self.backbone(x)
+
+
+class DoubleConv(nn.Module):
+    """Double convolution block for U-Net"""
+    
+    def __init__(self, in_channels: int, out_channels: int):
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def forward(self, x):
+        return self.double_conv(x)
+
+
+class ResidualDoubleConv(nn.Module):
+    """Residual double convolution block"""
+    
+    def __init__(self, in_channels: int, out_channels: int):
+        super(ResidualDoubleConv, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Skip connection
+        if in_channels != out_channels:
+            self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        else:
+            self.skip = nn.Identity()
+            
+        self.relu = nn.ReLU(inplace=True)
+        
+    def forward(self, x):
+        identity = self.skip(x)
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        
+        out = self.conv2(out)
+        out = self.bn2(out)
+        
+        out += identity
+        out = self.relu(out)
+        
+        return out
+
+
+class Down(nn.Module):
+    """Downscaling with maxpool then double conv"""
+    
+    def __init__(self, in_channels: int, out_channels: int, use_residual: bool = True):
+        super(Down, self).__init__()
+        if use_residual:
+            self.maxpool_conv = nn.Sequential(
+                nn.MaxPool2d(2),
+                ResidualDoubleConv(in_channels, out_channels)
+            )
+        else:
+            self.maxpool_conv = nn.Sequential(
+                nn.MaxPool2d(2),
+                DoubleConv(in_channels, out_channels)
+            )
+            
+    def forward(self, x):
+        return self.maxpool_conv(x)
+
+
+class Up(nn.Module):
+    """Upscaling then double conv"""
+    
+    def __init__(self, in_channels: int, out_channels: int, bilinear: bool = True, use_residual: bool = True):
+        super(Up, self).__init__()
+        
+        if bilinear:
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            if use_residual:
+                self.conv = ResidualDoubleConv(in_channels, out_channels)
+            else:
+                self.conv = DoubleConv(in_channels, out_channels)
+        else:
+            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            if use_residual:
+                self.conv = ResidualDoubleConv(in_channels, out_channels)
+            else:
+                self.conv = DoubleConv(in_channels, out_channels)
+                
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        
+        # Input is CHW
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+        
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                        diffY // 2, diffY - diffY // 2])
+        
+        x = torch.cat([x2, x1], dim=1)
+        return self.conv(x)
+
+
+class OutConv(nn.Module):
+    """Output convolution"""
+    
+    def __init__(self, in_channels: int, out_channels: int):
+        super(OutConv, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        
+    def forward(self, x):
+        return self.conv(x)
