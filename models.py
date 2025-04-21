@@ -335,8 +335,10 @@ def get_model(model_name: str, num_classes: int = 2, **kwargs):
     if model_name.lower() == 'resnet':
         return BrainTumorResNet(num_classes=num_classes, **kwargs)
     elif model_name.lower() == 'resunet':
+        kwargs.pop('n_classes', None)
         return ResUNet(n_classes=num_classes, **kwargs)
     elif model_name.lower() == 'unet':
+        kwargs.pop('n_classes', None)
         return UNet(n_classes=num_classes, **kwargs)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
