@@ -282,3 +282,50 @@ class UNet(nn.Module):
         logits = self.outc(x)
         
         return logits
+    
+class EnsembleModel(nn.Module):
+    """Ensemble model combining classification and segmentation"""
+    
+    def __init__(self, classification_model, segmentation_model):
+        super(EnsembleModel, self).__init__()
+        self.classification_model = classification_model
+        self.segmentation_model = segmentation_model
+        
+        # Freeze pretrained models initially
+        for param in self.classification_model.parameters():
+            param.requires_grad = False
+        for param in self.segmentation_model.parameters():
+            param.requires_grad = False
+            
+        # Fusion layer
+        self.fusion = nn.Sequential(
+            nn.Linear(2 + 2, 64),  # 2 from classification + 2 from segmentation
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(64, 2)
+        )
+        
+    def forward(self, x):
+        # Get classification predictions
+        cls_out = self.classification_model(x)
+        cls_prob = F.softmax(cls_out, dim=1)
+        
+        # Get segmentation predictions
+        seg_out = self.segmentation_model(x)
+        seg_prob = F.softmax(seg_out, dim=1)
+        
+        # Global average pooling for segmentation features
+        seg_global = torch.mean(seg_prob, dim=(2, 3))
+        
+        # Combine features
+        combined_features = torch.cat([cls_prob, seg_global], dim=1)
+        
+        # Final prediction
+        final_out = self.fusion(combined_features)
+        
+        return {
+            'classification': cls_out,
+            'segmentation': seg_out,
+            'ensemble': final_out
+        }
+
