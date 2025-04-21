@@ -329,3 +329,70 @@ class EnsembleModel(nn.Module):
             'ensemble': final_out
         }
 
+def get_model(model_name: str, num_classes: int = 2, **kwargs):
+    """Factory function to get different models"""
+    
+    if model_name.lower() == 'resnet':
+        return BrainTumorResNet(num_classes=num_classes, **kwargs)
+    elif model_name.lower() == 'resunet':
+        return ResUNet(n_classes=num_classes, **kwargs)
+    elif model_name.lower() == 'unet':
+        return UNet(n_classes=num_classes, **kwargs)
+    else:
+        raise ValueError(f"Unknown model name: {model_name}")
+
+
+def count_parameters(model):
+    """Count the number of trainable parameters"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def model_summary(model, input_size=(1, 3, 256, 256)):
+    """Print model summary"""
+    print(f"Model: {model.__class__.__name__}")
+    print(f"Total trainable parameters: {count_parameters(model):,}")
+    
+    # Test forward pass
+    device = next(model.parameters()).device
+    dummy_input = torch.randn(input_size).to(device)
+    
+    try:
+        with torch.no_grad():
+            output = model(dummy_input)
+            if isinstance(output, dict):
+                print("Output shapes:")
+                for key, value in output.items():
+                    print(f"  {key}: {value.shape}")
+            else:
+                print(f"Output shape: {output.shape}")
+    except Exception as e:
+        print(f"Forward pass failed: {e}")
+
+
+if __name__ == "__main__":
+    # Test models
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Test ResNet for classification
+    print("\n=== ResNet Classification Model ===")
+    resnet_model = get_model('resnet', num_classes=2, pretrained=True)
+    resnet_model = resnet_model.to(device)
+    model_summary(resnet_model)
+    
+    # Test ResUNet for segmentation
+    print("\n=== ResUNet Segmentation Model ===")
+    resunet_model = get_model('resunet', n_classes=2)
+    resunet_model = resunet_model.to(device)
+    model_summary(resunet_model)
+    
+    # Test UNet for segmentation
+    print("\n=== UNet Segmentation Model ===")
+    unet_model = get_model('unet', n_classes=2)
+    unet_model = unet_model.to(device)
+    model_summary(unet_model)
+    
+    # Test Ensemble Model
+    print("\n=== Ensemble Model ===")
+    ensemble_model = EnsembleModel(resnet_model, resunet_model)
+    ensemble_model = ensemble_model.to(device)
+    model_summary(ensemble_model)
