@@ -459,7 +459,7 @@ def main():
     # Load and prepare data (replace with actual data path)
     try:
         # This would load real data
-        data_path = r"C:\Users\heet\Downloads\kaggle_3m"
+        data_path = r"/home/heet_bhalani/Downloads/archive/lgg-mri-segmentation/kaggle_3m"
         image_paths, mask_paths, labels = preprocessor.load_kaggle_lgg_dataset(data_path)
         
         # Create data splits

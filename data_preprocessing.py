@@ -321,7 +321,7 @@ def main():
     preprocessor = DataPreprocessor(image_size=(256, 256))
     
     # Load dataset (adjust path as needed)
-    data_path = r"C:\Users\heet\Downloads\kaggle_3m"
+    data_path = r"/home/heet_bhalani/Downloads/archive/lgg-mri-segmentation/kaggle_3m"
     
     try:
         image_paths, mask_paths, labels = preprocessor.load_kaggle_lgg_dataset(data_path)
