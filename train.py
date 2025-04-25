@@ -367,7 +367,7 @@ class Trainer:
         # Setup scheduler
         if scheduler_type == 'reduce_lr':
             scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5,
-                                        patience=patience//2, verbose=True)
+                                        patience=patience//2)
         else:
             scheduler = CosineAnnealingLR(self.optimizer, T_max=num_epochs)
         
@@ -475,7 +475,7 @@ def main():
         )
         
         # Train classification model
-        print("\n=== Training Classification Model ===")
+        """print("\n=== Training Classification Model ===")
         cls_model = get_model('resnet', num_classes=2, pretrained=True)
         cls_trainer = Trainer(
             model=cls_model,
@@ -491,7 +491,7 @@ def main():
             num_epochs=50,
             learning_rate=0.001,
             patience=10
-        )
+        )"""
         
         # Train segmentation model
         print("\n=== Training Segmentation Model ===")
