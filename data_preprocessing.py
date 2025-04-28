@@ -47,8 +47,11 @@ class BrainTumorDataset(Dataset):
         
         if self.mode == 'segmentation':
             # Load mask for segmentation
-            if self.mask_paths and idx < len(self.mask_paths):
+            if self.mask_paths and idx < len(self.mask_paths) and self.mask_paths[idx] is not None:
                 mask = cv2.imread(self.mask_paths[idx], cv2.IMREAD_GRAYSCALE)
+                # FIX: Normalize mask values to binary (0 and 1)
+                # Handle common mask formats where tumor regions might be 255
+                mask = (mask > 0).astype(np.uint8)  # Convert to binary: 0 or 1
             else:
                 mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
             
@@ -57,7 +60,15 @@ class BrainTumorDataset(Dataset):
                 image = transformed['image']
                 mask = transformed['mask']
             
-            return image, mask.long()
+            # Ensure mask is in the correct format and range
+            mask = mask.long()  # Convert to long tensor for CrossEntropyLoss
+            
+            # Debug: Check mask values
+            if torch.max(mask) >= 2 or torch.min(mask) < 0:
+                print(f"Warning: Mask at index {idx} has invalid values. Min: {torch.min(mask)}, Max: {torch.max(mask)}")
+                mask = torch.clamp(mask, 0, 1)  # Clamp values to valid range
+            
+            return image, mask
         
         else:  # classification mode
             if self.transform:
@@ -66,6 +77,27 @@ class BrainTumorDataset(Dataset):
             
             label = self.labels[idx] if self.labels else 0
             return image, label
+
+    def visualize_mask(self, idx):
+        """Debug function to visualize a specific mask"""
+        if self.mask_paths and idx < len(self.mask_paths) and self.mask_paths[idx] is not None:
+            mask = cv2.imread(self.mask_paths[idx], cv2.IMREAD_GRAYSCALE)
+            print(f"Original mask stats - Min: {np.min(mask)}, Max: {np.max(mask)}, Unique values: {np.unique(mask)}")
+            
+            # Show histogram
+            plt.figure(figsize=(10, 4))
+            plt.subplot(1, 2, 1)
+            plt.imshow(mask, cmap='gray')
+            plt.title('Original Mask')
+            plt.colorbar()
+            
+            plt.subplot(1, 2, 2)
+            plt.hist(mask.flatten(), bins=50)
+            plt.title('Mask Value Distribution')
+            plt.xlabel('Pixel Value')
+            plt.ylabel('Frequency')
+            plt.show()
+
         
 class DataPreprocessor:
     """Main class for data preprocessing operations"""
@@ -156,13 +188,32 @@ class DataPreprocessor:
                             mask_paths.append(mask_path)
                             # Check if mask has tumor (non-zero pixels)
                             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                            # FIX: Properly check for tumor presence
                             has_tumor = 1 if np.any(mask > 0) else 0
                             labels.append(has_tumor)
                         else:
                             mask_paths.append(None)
                             labels.append(0)  # No tumor if no mask
         
+        print(f"Dataset loaded: {len(image_paths)} images")
+        print(f"Tumor samples: {sum(labels)}, No tumor samples: {len(labels) - sum(labels)}")
+        
         return image_paths, mask_paths, labels
+    
+    def validate_masks(self, mask_paths: List[str], sample_size: int = 10):
+        """Validate mask values to ensure they're in correct range"""
+        print("Validating mask values...")
+        
+        for i, mask_path in enumerate(mask_paths[:sample_size]):
+            if mask_path is not None and os.path.exists(mask_path):
+                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                unique_values = np.unique(mask)
+                print(f"Mask {i}: Unique values = {unique_values}, Shape = {mask.shape}")
+                
+                if len(unique_values) > 2:
+                    print(f"  Warning: Mask has more than 2 unique values: {unique_values}")
+                if np.max(unique_values) > 1:
+                    print(f"  Warning: Mask has values > 1: max = {np.max(unique_values)}")
     
     def create_data_splits(self, image_paths: List[str], mask_paths: List[str], 
                           labels: List[int], test_size: float = 0.2, 
@@ -291,6 +342,7 @@ class DataPreprocessor:
             
             if mode == 'segmentation':
                 mask = targets[i].numpy()
+                print(f"Mask {i+1} - Min: {np.min(mask)}, Max: {np.max(mask)}, Unique: {np.unique(mask)}")
                 axes[1, i].imshow(mask, cmap='gray')
                 axes[1, i].set_title(f'Mask {i+1}')
             else:
@@ -334,6 +386,9 @@ def main():
     try:
         image_paths, mask_paths, labels = preprocessor.load_kaggle_lgg_dataset(data_path)
         print(f"Loaded {len(image_paths)} images")
+        
+        # Validate masks before training
+        preprocessor.validate_masks(mask_paths, sample_size=20)
         
         # Get dataset statistics
         stats = preprocessor.get_dataset_statistics(labels)
