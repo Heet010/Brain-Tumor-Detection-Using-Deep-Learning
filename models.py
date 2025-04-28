@@ -329,6 +329,69 @@ class EnsembleModel(nn.Module):
             'ensemble': final_out
         }
 
+class LightweightUNet(nn.Module):
+    """Lightweight U-Net for low VRAM GPUs"""
+    
+    def __init__(self, n_channels: int = 3, n_classes: int = 2):
+        super(LightweightUNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        
+        # Encoder with much fewer channels
+        self.enc1 = self._double_conv(n_channels, 32)
+        self.pool1 = nn.MaxPool2d(2)
+        self.enc2 = self._double_conv(32, 64)
+        self.pool2 = nn.MaxPool2d(2)
+        self.enc3 = self._double_conv(64, 128)
+        self.pool3 = nn.MaxPool2d(2)
+        
+        # Bottleneck
+        self.bottleneck = self._double_conv(128, 256)
+        
+        # Decoder
+        self.upconv3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec3 = self._double_conv(256, 128)
+        self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec2 = self._double_conv(128, 64)
+        self.upconv1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.dec1 = self._double_conv(64, 32)
+        
+        self.final_conv = nn.Conv2d(32, n_classes, kernel_size=1)
+        
+    def _double_conv(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def forward(self, x):
+        # Encoder
+        enc1 = self.enc1(x)
+        enc2 = self.enc2(self.pool1(enc1))
+        enc3 = self.enc3(self.pool2(enc2))
+        
+        # Bottleneck
+        bottleneck = self.bottleneck(self.pool3(enc3))
+        
+        # Decoder
+        dec3 = self.upconv3(bottleneck)
+        dec3 = torch.cat((dec3, enc3), dim=1)
+        dec3 = self.dec3(dec3)
+        
+        dec2 = self.upconv2(dec3)
+        dec2 = torch.cat((dec2, enc2), dim=1)
+        dec2 = self.dec2(dec2)
+        
+        dec1 = self.upconv1(dec2)   
+        dec1 = torch.cat((dec1, enc1), dim=1)
+        dec1 = self.dec1(dec1)
+        
+        return self.final_conv(dec1)
+
 def get_model(model_name: str, num_classes: int = 2, **kwargs):
     """Factory function to get different models"""
     
@@ -340,6 +403,9 @@ def get_model(model_name: str, num_classes: int = 2, **kwargs):
     elif model_name.lower() == 'unet':
         kwargs.pop('n_classes', None)
         return UNet(n_classes=num_classes, **kwargs)
+    elif model_name.lower() == 'lightweight_unet':
+        kwargs.pop('n_classes', None)
+        return LightweightUNet(n_classes=num_classes, **kwargs)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
