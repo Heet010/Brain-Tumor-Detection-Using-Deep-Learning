@@ -16,10 +16,9 @@ from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-
+import gc
 from models import get_model, BrainTumorResNet, ResUNet, UNet
 from data_preprocessing import DataPreprocessor
-
 
 class DiceLoss(nn.Module):
     """Dice Loss for segmentation"""
@@ -177,7 +176,7 @@ class Trainer:
         return torch.mean(dice).item()
     
     def train_epoch(self, optimizer: optim.Optimizer, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """Train for one epoch"""
+        """Train for one epoch with memory optimization"""
         self.model.train()
         running_loss = 0.0
         all_predictions = []
@@ -205,22 +204,35 @@ class Trainer:
             optimizer.step()
             
             running_loss += loss.item()
-            all_predictions.append(outputs.detach())
-            all_targets.append(targets.detach())
+            
+            # Store predictions in CPU memory to save GPU memory
+            all_predictions.append(outputs.detach().cpu())
+            all_targets.append(targets.detach().cpu())
+            
+            # Clear GPU cache periodically
+            if batch_idx % 50 == 0:
+                self.clear_memory()
             
             # Update progress bar
             pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
+            
+            # Delete variables to free memory
+            del data, targets, outputs, loss
         
         # Calculate epoch metrics
         epoch_loss = running_loss / len(self.train_loader)
-        all_predictions = torch.cat(all_predictions, dim=0)
-        all_targets = torch.cat(all_targets, dim=0)
+        all_predictions = torch.cat(all_predictions, dim=0).to(self.device)
+        all_targets = torch.cat(all_targets, dim=0).to(self.device)
         epoch_metrics = self._calculate_metrics(all_predictions, all_targets)
         
+        # Clear memory after epoch
+        self.clear_memory()
+        
         return epoch_loss, epoch_metrics
-    
+
+    # Also modify validate_epoch similarly
     def validate_epoch(self, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """Validate for one epoch"""
+        """Validate for one epoch with memory optimization"""
         self.model.eval()
         running_loss = 0.0
         all_predictions = []
@@ -229,7 +241,7 @@ class Trainer:
         pbar = tqdm(self.val_loader, desc=f'Epoch {epoch+1} [Val]')
         
         with torch.no_grad():
-            for data, targets in pbar:
+            for batch_idx, (data, targets) in enumerate(pbar):
                 data, targets = data.to(self.device), targets.to(self.device)
                 
                 # Forward pass
@@ -237,17 +249,29 @@ class Trainer:
                 loss = self.criterion(outputs, targets)
                 
                 running_loss += loss.item()
-                all_predictions.append(outputs)
-                all_targets.append(targets)
+                
+                # Store in CPU memory
+                all_predictions.append(outputs.cpu())
+                all_targets.append(targets.cpu())
+                
+                # Clear GPU cache periodically
+                if batch_idx % 50 == 0:
+                    self.clear_memory()
                 
                 # Update progress bar
                 pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
+                
+                # Delete variables
+                del data, targets, outputs, loss
         
         # Calculate epoch metrics
         epoch_loss = running_loss / len(self.val_loader)
-        all_predictions = torch.cat(all_predictions, dim=0)
-        all_targets = torch.cat(all_targets, dim=0)
+        all_predictions = torch.cat(all_predictions, dim=0).to(self.device)
+        all_targets = torch.cat(all_targets, dim=0).to(self.device)
         epoch_metrics = self._calculate_metrics(all_predictions, all_targets)
+        
+        # Clear memory after validation
+        self.clear_memory()
         
         return epoch_loss, epoch_metrics
     
@@ -294,6 +318,11 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             self.writer.add_scalar('Learning_Rate', param_group['lr'], epoch)
     
+    def clear_memory(self):
+        """Clear GPU memory"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
     def plot_training_history(self):
         """Plot training history"""
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
@@ -446,13 +475,258 @@ class Trainer:
         
         return self.best_model_path
 
+# New Memory-Optimized Trainer Class
+class MemoryOptimizedTrainer(Trainer):
+    """Memory-optimized trainer with fixed IoU calculation - Simple Version"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Enable mixed precision training (fixed deprecated warning)
+        try:
+            from torch.amp import GradScaler
+            self.scaler = GradScaler('cuda')
+        except ImportError:
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+    
+    def clear_memory(self):
+        """Aggressive memory clearing"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        import gc
+        gc.collect()
+    
+    def calculate_segmentation_metrics(self, predictions, targets):
+        """Simple and robust segmentation metrics calculation"""
+        # Get predictions
+        preds = torch.argmax(predictions, dim=1)
+        
+        # Convert to numpy for easier calculation
+        preds_np = preds.cpu().numpy()
+        targets_np = targets.cpu().numpy()
+        
+        # Initialize metrics
+        batch_ious = []
+        batch_dices = []
+        batch_accuracies = []
+        
+        for i in range(preds_np.shape[0]):
+            pred_i = preds_np[i]
+            target_i = targets_np[i]
+            
+            # Focus on tumor class (class 1)
+            pred_tumor = (pred_i == 1).astype(np.float32)
+            target_tumor = (target_i == 1).astype(np.float32)
+            
+            # Calculate intersection and union
+            intersection = np.sum(pred_tumor * target_tumor)
+            union = np.sum(pred_tumor) + np.sum(target_tumor) - intersection
+            
+            # Calculate IoU
+            if union > 0:
+                iou = intersection / union
+            else:
+                # Perfect prediction if both are empty
+                iou = 1.0 if (np.sum(target_tumor) == 0 and np.sum(pred_tumor) == 0) else 0.0
+            
+            # Calculate Dice
+            if (np.sum(pred_tumor) + np.sum(target_tumor)) > 0:
+                dice = 2.0 * intersection / (np.sum(pred_tumor) + np.sum(target_tumor))
+            else:
+                # Perfect prediction if both are empty
+                dice = 1.0 if (np.sum(target_tumor) == 0 and np.sum(pred_tumor) == 0) else 0.0
+            
+            # Calculate pixel accuracy
+            pixel_accuracy = np.mean(pred_i == target_i)
+            
+            batch_ious.append(iou)
+            batch_dices.append(dice)
+            batch_accuracies.append(pixel_accuracy)
+        
+        return {
+            'iou': np.mean(batch_ious),
+            'dice': np.mean(batch_dices),
+            'pixel_accuracy': np.mean(batch_accuracies)
+        }
+    
+    def train_epoch(self, optimizer: optim.Optimizer, epoch: int) -> Tuple[float, Dict[str, float]]:
+        """Memory-optimized training epoch with simple metrics"""
+        # Handle different autocast versions
+        try:
+            from torch.amp import autocast
+            autocast_context = autocast('cuda')
+        except ImportError:
+            from torch.cuda.amp import autocast
+            autocast_context = autocast()
+        
+        self.model.train()
+        running_loss = 0.0
+        
+        # Collect metrics
+        all_metrics = []
+        
+        pbar = tqdm(self.train_loader, desc=f'Epoch {epoch+1} [Train]')
+        
+        for batch_idx, (data, targets) in enumerate(pbar):
+            data = data.to(self.device, non_blocking=True)
+            targets = targets.to(self.device, non_blocking=True)
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass with mixed precision
+            with autocast_context:
+                outputs = self.model(data)
+                loss = self.criterion(outputs, targets)
+            
+            # Backward pass
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(optimizer)
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+            # Update weights
+            self.scaler.step(optimizer)
+            self.scaler.update()
+            
+            # Calculate metrics
+            with torch.no_grad():
+                batch_metrics = self.calculate_segmentation_metrics(outputs, targets)
+                all_metrics.append(batch_metrics)
+            
+            running_loss += loss.item()
+            
+            # Clear memory periodically
+            if batch_idx % 20 == 0:
+                self.clear_memory()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'Loss': f'{loss.item():.4f}',
+                'Dice': f'{batch_metrics["dice"]:.4f}',
+                'IoU': f'{batch_metrics["iou"]:.4f}'
+            })
+            
+            # Clean up
+            del data, targets, outputs, loss
+        
+        # Calculate epoch metrics
+        epoch_loss = running_loss / len(self.train_loader)
+        
+        # Average all metrics
+        epoch_metrics = {
+            'iou': np.mean([m['iou'] for m in all_metrics]),
+            'dice': np.mean([m['dice'] for m in all_metrics]),
+            'pixel_accuracy': np.mean([m['pixel_accuracy'] for m in all_metrics])
+        }
+        
+        self.clear_memory()
+        return epoch_loss, epoch_metrics
+    
+    def validate_epoch(self, epoch: int) -> Tuple[float, Dict[str, float]]:
+        """Memory-optimized validation epoch with simple metrics"""
+        # Handle different autocast versions
+        try:
+            from torch.amp import autocast
+            autocast_context = autocast('cuda')
+        except ImportError:
+            from torch.cuda.amp import autocast
+            autocast_context = autocast()
+        
+        self.model.eval()
+        running_loss = 0.0
+        
+        # Collect metrics
+        all_metrics = []
+        
+        pbar = tqdm(self.val_loader, desc=f'Epoch {epoch+1} [Val]')
+        
+        with torch.no_grad():
+            for batch_idx, (data, targets) in enumerate(pbar):
+                data = data.to(self.device, non_blocking=True)
+                targets = targets.to(self.device, non_blocking=True)
+                
+                # Forward pass
+                with autocast_context:
+                    outputs = self.model(data)
+                    loss = self.criterion(outputs, targets)
+                
+                # Calculate metrics
+                batch_metrics = self.calculate_segmentation_metrics(outputs, targets)
+                all_metrics.append(batch_metrics)
+                
+                running_loss += loss.item()
+                
+                # Clear memory periodically
+                if batch_idx % 20 == 0:
+                    self.clear_memory()
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'Loss': f'{loss.item():.4f}',
+                    'Dice': f'{batch_metrics["dice"]:.4f}',
+                    'IoU': f'{batch_metrics["iou"]:.4f}'
+                })
+                
+                # Clean up
+                del data, targets, outputs, loss
+        
+        # Calculate epoch metrics
+        epoch_loss = running_loss / len(self.val_loader)
+        
+        # Average all metrics
+        epoch_metrics = {
+            'iou': np.mean([m['iou'] for m in all_metrics]),
+            'dice': np.mean([m['dice'] for m in all_metrics]),
+            'pixel_accuracy': np.mean([m['pixel_accuracy'] for m in all_metrics])
+        }
+        
+        self.clear_memory()
+        return epoch_loss, epoch_metrics
+    
+def analyze_dataset_distribution(dataloader, num_batches=10):
+    """Analyze the class distribution in your dataset"""
+    print("=== DATASET ANALYSIS ===")
+    
+    total_pixels = 0
+    tumor_pixels = 0
+    samples_with_tumor = 0
+    total_samples = 0
+    
+    for i, (_, targets) in enumerate(dataloader):
+        if i >= num_batches:
+            break
+        
+        batch_tumor_pixels = (targets == 1).sum().item()
+        batch_total_pixels = targets.numel()
+        batch_samples_with_tumor = ((targets == 1).sum(dim=(1,2)) > 0).sum().item()
+        
+        total_pixels += batch_total_pixels
+        tumor_pixels += batch_tumor_pixels
+        samples_with_tumor += batch_samples_with_tumor
+        total_samples += targets.shape[0]
+        
+        print(f"Batch {i}: {batch_tumor_pixels}/{batch_total_pixels} tumor pixels ({100*batch_tumor_pixels/batch_total_pixels:.1f}%)")
+        print(f"         {batch_samples_with_tumor}/{targets.shape[0]} samples have tumors")
+    
+    print(f"\nOVERALL STATISTICS:")
+    print(f"Tumor pixels: {tumor_pixels}/{total_pixels} ({100*tumor_pixels/total_pixels:.2f}%)")
+    print(f"Samples with tumors: {samples_with_tumor}/{total_samples} ({100*samples_with_tumor/total_samples:.1f}%)")
+    print("=" * 40)#
 
 def main():
     """Example usage of the training module"""
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"Total GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        torch.cuda.empty_cache()
+        print(f"Available GPU Memory: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB")
     # Initialize data preprocessor
     preprocessor = DataPreprocessor(image_size=(256, 256))
     
@@ -467,16 +741,16 @@ def main():
         
         # Create dataloaders
         seg_dataloaders = preprocessor.create_dataloaders(
-            data_splits, batch_size=8, mode='segmentation'
+            data_splits, batch_size=2, mode='segmentation', num_workers=1
         )
-        
+
         cls_dataloaders = preprocessor.create_dataloaders(
             data_splits, batch_size=16, mode='classification'
         )
         
         # Train classification model
-        """print("\n=== Training Classification Model ===")
-        cls_model = get_model('resnet', num_classes=2, pretrained=True)
+        print("\n=== Training Classification Model ===")
+        """cls_model = get_model('resnet', num_classes=2, pretrained=True)
         cls_trainer = Trainer(
             model=cls_model,
             train_loader=cls_dataloaders['train'],
@@ -493,29 +767,40 @@ def main():
             patience=10
         )"""
         
+        print("Analyzing dataset distribution...")
+        analyze_dataset_distribution(seg_dataloaders['train'], num_batches=10)
+        analyze_dataset_distribution(seg_dataloaders['val'], num_batches=5)
+
         # Train segmentation model
         print("\n=== Training Segmentation Model ===")
         seg_model = get_model('resunet', n_classes=2)
-        seg_trainer = Trainer(
-            model=seg_model,
-            train_loader=seg_dataloaders['train'],
-            val_loader=seg_dataloaders['val'],
-            task='segmentation',
-            device=device,
-            log_dir='runs/segmentation',
-            save_dir='checkpoints/segmentation'
-        )
+
+        param_count = sum(p.numel() for p in seg_model.parameters())
+        print(f"Model parameters: {param_count:,}")
+
+        seg_trainer = MemoryOptimizedTrainer(  # Use the new trainer class below
+                                                model=seg_model,
+                                                train_loader=seg_dataloaders['train'],
+                                                val_loader=seg_dataloaders['val'],
+                                                task='segmentation',
+                                                device=device,
+                                                log_dir='runs/segmentation',
+                                                save_dir='checkpoints/segmentation'
+                                            )
         
         best_seg_model = seg_trainer.train(
-            num_epochs=100,
+            num_epochs=30,  # Reduced epochs
             learning_rate=0.001,
-            patience=15
+            patience=8
         )
         
         print("Training completed successfully!")
         
     except Exception as e:
         print(f"Error in training: {str(e)}")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
         print("Please ensure the dataset path is correct and dependencies are installed.")
 
 
