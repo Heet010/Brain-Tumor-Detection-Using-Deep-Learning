@@ -265,63 +265,50 @@ class DataPreprocessor:
         }
     
     def create_dataloaders(self, data_splits: dict, batch_size: int = 16, 
-                          num_workers: int = 4, mode: str = 'segmentation') -> dict:
+                      num_workers: int = 4, mode: str = 'segmentation') -> dict:
         """
         Create PyTorch DataLoaders
         
         Args:
-            data_splits: Dictionary with train/val/test splits
+            data_splits: Dictionary with train/val/test splits (can contain subset of splits)
             batch_size: Batch size for training
             num_workers: Number of worker processes for data loading
             mode: 'segmentation' or 'classification'
             
         Returns:
-            Dictionary containing DataLoaders
+            Dictionary containing DataLoaders for available splits
         """
         dataloaders = {}
         
-        # Training dataloader
-        train_dataset = BrainTumorDataset(
-            image_paths=data_splits['train']['images'],
-            mask_paths=data_splits['train']['masks'],
-            labels=data_splits['train']['labels'],
-            transform=self.train_transform if mode == 'segmentation' 
-                     else self.classification_train_transform,
-            mode=mode
-        )
-        dataloaders['train'] = DataLoader(
-            train_dataset, batch_size=batch_size, 
-            shuffle=True, num_workers=num_workers, pin_memory=True
-        )
-        
-        # Validation dataloader
-        val_dataset = BrainTumorDataset(
-            image_paths=data_splits['val']['images'],
-            mask_paths=data_splits['val']['masks'],
-            labels=data_splits['val']['labels'],
-            transform=self.val_transform,
-            mode=mode
-        )
-        dataloaders['val'] = DataLoader(
-            val_dataset, batch_size=batch_size, 
-            shuffle=False, num_workers=num_workers, pin_memory=True
-        )
-        
-        # Test dataloader
-        test_dataset = BrainTumorDataset(
-            image_paths=data_splits['test']['images'],
-            mask_paths=data_splits['test']['masks'],
-            labels=data_splits['test']['labels'],
-            transform=self.val_transform,
-            mode=mode
-        )
-        dataloaders['test'] = DataLoader(
-            test_dataset, batch_size=batch_size, 
-            shuffle=False, num_workers=num_workers, pin_memory=True
-        )
+        # Create dataloaders only for available splits
+        for split_name in ['train', 'val', 'test']:
+            if split_name not in data_splits:
+                continue
+                
+            # Choose appropriate transform
+            if split_name == 'train':
+                transform = self.train_transform if mode == 'segmentation' else self.classification_train_transform
+                shuffle = True
+            else:
+                transform = self.val_transform
+                shuffle = False
+            
+            # Create dataset
+            dataset = BrainTumorDataset(
+                image_paths=data_splits[split_name]['images'],
+                mask_paths=data_splits[split_name]['masks'],
+                labels=data_splits[split_name]['labels'],
+                transform=transform,
+                mode=mode
+            )
+            
+            # Create dataloader
+            dataloaders[split_name] = DataLoader(
+                dataset, batch_size=batch_size, 
+                shuffle=shuffle, num_workers=num_workers, pin_memory=True
+            )
         
         return dataloaders
-    
     def visualize_samples(self, dataloader: DataLoader, num_samples: int = 4, 
                          mode: str = 'segmentation'):
         """Visualize sample data"""
