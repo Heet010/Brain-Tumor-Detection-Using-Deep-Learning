@@ -1,0 +1,9 @@
+{
+  "pixel_accuracy": 0.9897908606298704,
+  "background_iou": 0.9897322654724121,
+  "background_dice": 0.9948396682739258,
+  "tumor_iou": 0.35948875546455383,
+  "tumor_dice": 0.5288587212562561,
+  "sensitivity": 0.5966728925704956,
+  "specificity": 0.9936026334762573
+}
